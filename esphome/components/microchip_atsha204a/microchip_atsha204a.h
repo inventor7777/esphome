@@ -61,6 +61,7 @@ enum HostStatus : int {
   SESSION_LOST = -6,
   INVALID_ARGUMENT = -7,
   WAKE_FAILED = -8,
+  UNCONFIRMED = -9,
 };
 
 class ATSHA204A : public PollingComponent {
@@ -86,6 +87,7 @@ class ATSHA204A : public PollingComponent {
   void read_block(Zone zone, uint16_t address, BlockCallback callback);
   void command(Opcode opcode, uint8_t param1, uint16_t param2, std::span<const uint8_t> data, EndMode end_mode,
                uint32_t session, bool expect_response, ResultCallback callback);
+  // Returns whether Sleep was sent or a wake before Sleep was started.
   bool end_session(uint32_t session);
 
   void setup() override;
@@ -105,7 +107,7 @@ class ATSHA204A : public PollingComponent {
     STATE_HELD
   };
 
-  void start_wake_();
+  bool start_wake_();
   bool send_frame_(Opcode opcode, uint8_t param1, uint16_t param2, const uint8_t *data, size_t size);
   void send_user_();
   void handle_response_(const uint8_t *packet, int status);
@@ -113,7 +115,7 @@ class ATSHA204A : public PollingComponent {
   void set_idle_();
   void publish_presence_(bool present);
   void finish_user_(int status, const uint8_t *data = nullptr, size_t size = 0);
-  void clear_session_();
+  bool close_session_(bool ready_to_sleep);
   bool session_expired_(uint32_t now) const;
 
   Transport *const transport_;

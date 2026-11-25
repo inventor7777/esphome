@@ -3,5 +3,5 @@ packages:
 
 microchip_atsha204a:
   - id: atsha204a_rmt
-    transport: swi_rmt
+    type: swi_rmt
     uart_id: uart_rx_bus

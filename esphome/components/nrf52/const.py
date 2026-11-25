@@ -85,6 +85,7 @@ AIN_TO_GPIO = {
 FLASH_SECTOR_SIZE = 0x1000  # nRF52 flash page
 
 # zephyr_mcumgr OTA keys, shared with the upload path
+CONF_TRANSPORT = "transport"
 CONF_UDP = "udp"
 
 # SMP over UDP fits each frame in Thread's IPv6 minimum link MTU. The host passes it to

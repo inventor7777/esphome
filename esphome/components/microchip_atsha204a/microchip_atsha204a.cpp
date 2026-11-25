@@ -105,18 +105,19 @@ void ATSHA204A::update() {
     this->start_wake_();
 }
 
-void ATSHA204A::start_wake_() {
+bool ATSHA204A::start_wake_() {
   this->state_ = State::STATE_WAKE;
   this->enable_loop();
   this->awake_ = this->transport_->wake();
   if (!this->awake_) {
     this->handle_response_(nullptr, IO_ERROR);
-    return;
+    return false;
   }
   this->wait_start_ = micros();
   this->woke_at_ = millis();
   this->wait_us_ = WAKE_DELAY_US;
   this->response_requested_ = false;
+  return true;
 }
 
 bool ATSHA204A::send_frame_(Opcode opcode, uint8_t param1, uint16_t param2, const uint8_t *data, size_t size) {
@@ -201,6 +202,7 @@ void ATSHA204A::read_block(Zone zone, uint16_t address, BlockCallback callback) 
     return;
   if (!this->send_frame_(Opcode::OPCODE_READ, READ_32_BYTES | static_cast<uint8_t>(zone), address, nullptr, 0)) {
     this->finish_poll_(false);
+    callback(nullptr);
     return;
   }
   this->state_ = State::STATE_BLOCK;
@@ -225,8 +227,10 @@ void ATSHA204A::loop() {
       return;
     }
     if (this->state_ == State::STATE_USER && !this->expect_response_) {
+      // Pause only idles chips whose selector does not match. Sleep any chip still awake.
+      const bool sent = this->transport_->power_down(false, true);
       this->awake_ = false;
-      this->finish_user_(0);
+      this->finish_user_(sent ? UNCONFIRMED : IO_ERROR);
       return;
     }
     if (!this->transport_->request_response()) {
@@ -263,7 +267,7 @@ void ATSHA204A::handle_response_(const uint8_t *packet, int status) {
   switch (this->state_) {
     case State::STATE_WAKE:
       if (this->closing_session_) {
-        this->clear_session_();
+        this->close_session_(status == WAKE_STATUS);
         return;
       }
       if (status != WAKE_STATUS) {
@@ -396,13 +400,16 @@ void ATSHA204A::finish_user_(int status, const uint8_t *data, size_t size) {
   }
 }
 
-void ATSHA204A::clear_session_() {
-  if (this->awake_)
-    this->transport_->power_down(false);
+bool ATSHA204A::close_session_(bool ready_to_sleep) {
+  const bool sent = ready_to_sleep && this->transport_->power_down(false);
+  if (!sent) {
+    ESP_LOGW(TAG, "Could not put the chip to sleep while ending the session");
+  }
   this->awake_ = false;
   this->session_ = 0;
   this->closing_session_ = false;
   this->set_idle_();
+  return sent;
 }
 
 void ATSHA204A::set_idle_() {
@@ -422,11 +429,9 @@ bool ATSHA204A::end_session(uint32_t session) {
   if (!this->awake_) {
     // An idle chip must be woken before Sleep can erase its retained state.
     this->closing_session_ = true;
-    this->start_wake_();
-  } else {
-    this->clear_session_();
+    return this->start_wake_();
   }
-  return true;
+  return this->close_session_(true);
 }
 
 }  // namespace esphome::microchip_atsha204a

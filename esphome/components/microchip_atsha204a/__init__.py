@@ -1,20 +1,21 @@
 from esphome import automation, final_validate as fv, pins
 import esphome.codegen as cg
-from esphome.components import esp32, esp32_rmt, i2c, uart
-from esphome.components.const import CONF_TRANSPORT
+from esphome.components import esp32, esp32_rmt, i2c, logger, uart
 import esphome.config_validation as cv
 from esphome.const import (
+    CONF_BAUD_RATE,
     CONF_DATA,
     CONF_FLOW_CONTROL_PIN,
+    CONF_HARDWARE_UART,
     CONF_ID,
     CONF_INVERTED,
     CONF_MODE,
     CONF_NUMBER,
     CONF_OPEN_DRAIN,
-    CONF_RMT_SYMBOLS,
     CONF_RX_BUFFER_SIZE,
     CONF_RX_PIN,
     CONF_TX_PIN,
+    CONF_TYPE,
     CONF_UART_ID,
 )
 from esphome.core import CORE, ID
@@ -78,18 +79,14 @@ CONFIG_SCHEMA = cv.typed_schema(
         ),
         SWI_RMT: cv.All(
             BASE_SCHEMA.extend(uart.UART_DEVICE_SCHEMA).extend(
-                {
-                    cv.GenerateID(CONF_TRANSPORT_ID): cv.declare_id(RMTTransport),
-                    cv.Optional(CONF_RMT_SYMBOLS, default=64): cv.one_of(64, int=True),
-                }
+                {cv.GenerateID(CONF_TRANSPORT_ID): cv.declare_id(RMTTransport)}
             ),
             cv.only_on_esp32,
             esp32.only_on_variant(supported=[esp32.VARIANT_ESP32]),
             esp32.require_idf_version(cv.Version(5, 5, 4), SWI_RMT),
-            esp32_rmt.request_rmt_channel("TX", 600.0),
+            esp32_rmt.request_rmt_channels([("TX", 1)], 600.0),
         ),
     },
-    key=CONF_TRANSPORT,
     lower=True,
 )
 
@@ -136,8 +133,40 @@ def _validate_rmt_wiring(config: ConfigType) -> ConfigType:
     return config
 
 
+def _validate_swi_uart_wiring(config: ConfigType) -> ConfigType:
+    if str(config[CONF_ID].type) not in uart.NATIVE_UART_CLASSES:
+        raise cv.Invalid("The single-wire transport requires a hardware UART")
+    if CONF_FLOW_CONTROL_PIN in config:
+        raise cv.Invalid(
+            "Single-wire UART does not support flow control", [CONF_FLOW_CONTROL_PIN]
+        )
+    for key in (CONF_TX_PIN, CONF_RX_PIN):
+        if config[key][CONF_INVERTED]:
+            raise cv.Invalid("Single-wire UART requires non-inverted pins", [key])
+    if CORE.is_esp8266:
+        tx, rx = config[CONF_TX_PIN][CONF_NUMBER], config[CONF_RX_PIN][CONF_NUMBER]
+        if (tx, rx) not in ((1, 3), (15, 13)):
+            raise cv.Invalid(
+                "On ESP8266, use hardware UART0 pins GPIO1/GPIO3 or GPIO15/GPIO13"
+            )
+        logger_config = fv.full_config.get().get(logger.DOMAIN)
+        if (
+            logger_config
+            and logger_config[CONF_BAUD_RATE]
+            and logger_config[CONF_HARDWARE_UART]
+            in (
+                logger.UART0,
+                logger.UART0_SWAP,
+            )
+        ):
+            raise cv.Invalid(
+                "The single-wire transport requires UART0. Disable or move serial logging"
+            )
+    return config
+
+
 def _final_validate(config: ConfigType) -> None:
-    transport = config[CONF_TRANSPORT]
+    transport = config[CONF_TYPE]
     if transport == I2C:
         _VALIDATE_I2C(config)
         return
@@ -149,6 +178,7 @@ def _final_validate(config: ConfigType) -> None:
         esp32_rmt.final_validate_rmt_channels(config)
     else:
         _VALIDATE_SWI_UART(config)
+        fv.id_declaration_match_schema(_validate_swi_uart_wiring)(uart_id)
     _VALIDATE_UART_BUFFER(uart_id)
     uart.claim_exclusive(config, DOMAIN)
 
@@ -157,7 +187,7 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def to_code(config: ConfigType) -> None:
-    transport_type = config[CONF_TRANSPORT]
+    transport_type = config[CONF_TYPE]
     if transport_type == SWI_RMT:
         cg.add_define("USE_MICROCHIP_ATSHA204A_SWI_RMT")
         esp32_rmt.register_rmt_channel(config)

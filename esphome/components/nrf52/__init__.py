@@ -12,7 +12,6 @@ from esphome.build_helpers import pch
 from esphome.build_helpers.ccache import resolve_ccache_path
 import esphome.codegen as cg
 from esphome.components import network
-from esphome.components.const import CONF_TRANSPORT
 from esphome.components.zephyr import (
     PreferenceStorage,
     Section,
@@ -95,6 +94,7 @@ from .const import (
     BOOTLOADER_ADAFRUIT_NRF52_SD140_V7,
     BOOTLOADER_NRF,
     CONF_DCDC,
+    CONF_TRANSPORT,
     CONF_UDP,
     FLASH_SECTOR_SIZE,
     SMP_UDP_PORT,

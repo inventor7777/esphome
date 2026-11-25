@@ -6,8 +6,14 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
+#if defined(USE_MICROCHIP_ATSHA204A_SWI_UART) && defined(USE_RP2)
+#include "esphome/components/uart/uart_component_rp2.h"
+#elif defined(USE_MICROCHIP_ATSHA204A_SWI_UART) && defined(USE_LIBRETINY)
+#include "esphome/components/uart/uart_component_libretiny.h"
+#endif
 #ifdef USE_MICROCHIP_ATSHA204A_SWI_RMT
 #include "driver/gpio.h"
+#include "esp_err.h"
 #endif
 
 namespace esphome::microchip_atsha204a {
@@ -65,9 +71,10 @@ Receive I2CTransport::receive(uint8_t *packet) {
   return Receive::RECEIVE_COMPLETE;
 }
 
-bool I2CTransport::power_down(bool idle) {
+bool I2CTransport::power_down(bool idle, bool allow_nack) {
   const uint8_t flag = idle ? I2C_IDLE : I2C_SLEEP;
-  return this->write(&flag, 1) == i2c::ERROR_OK;
+  const auto status = this->write(&flag, 1);
+  return status == i2c::ERROR_OK || (allow_nack && status == i2c::ERROR_NOT_ACKNOWLEDGED);
 }
 #endif
 
@@ -132,7 +139,7 @@ Receive SWITransport::receive(uint8_t *packet) {
   return Receive::RECEIVE_COMPLETE;
 }
 
-bool SWITransport::power_down(bool idle) {
+bool SWITransport::power_down(bool idle, bool) {
   this->wait_to_send_();
   const uint8_t flag = idle ? SWI_IDLE : SWI_SLEEP;
   return this->send(&flag, 1);
@@ -141,8 +148,21 @@ bool SWITransport::power_down(bool idle) {
 
 #ifdef USE_MICROCHIP_ATSHA204A_SWI_UART
 bool UARTTransport::setup() {
-  this->wake_pin_->setup();
-  this->wake_pin_->digital_write(true);
+#if defined(USE_ESP8266)
+  // The ESP8266 software UART reports unlimited write space because it has no TX FIFO.
+  const bool hardware_uart = this->parent_->available_for_write() != SIZE_MAX;
+#elif defined(USE_RP2)
+  const bool hardware_uart = static_cast<uart::RP2UartComponent *>(this->parent_)->is_hw_serial();
+#elif defined(USE_LIBRETINY)
+  const bool hardware_uart = static_cast<uart::LibreTinyUARTComponent *>(this->parent_)->get_hw_serial_number() >= 0;
+#else
+  constexpr bool hardware_uart = true;
+#endif
+  if (!hardware_uart) {
+    ESP_LOGE(TAG, "Single-wire UART requires a hardware UART");
+    return false;
+  }
+  setup_output_pin(this->wake_pin_, true);
   return true;
 }
 
@@ -238,19 +258,26 @@ void RMTTransport::dump_config() { ESP_LOGCONFIG(TAG, "  Transport: Single-wire 
 bool RMTTransport::wake() { return this->transmit_(&RMT_WAKE, 1); }
 
 bool RMTTransport::transmit_(const uint8_t *bytes, size_t size) {
-  if (this->tx_failed_)
+  // A timed-out transaction can still own the frame. Recover when the driver releases it.
+  if (rmt_tx_wait_all_done(this->tx_, 0) != ESP_OK)
     return false;
 
   std::copy_n(bytes, size, this->frame_.begin());
   rmt_transmit_config_t config{};
   config.flags.eot_level = true;
-  if (rmt_transmit(this->tx_, this->encoder_, this->frame_.data(), size, &config) != ESP_OK)
-    return false;
-  // A maximum-length frame takes about 27 ms. On timeout, the driver may still own the buffer.
-  this->tx_failed_ = rmt_tx_wait_all_done(this->tx_, 40) != ESP_OK;
-  if (!this->tx_failed_)
-    std::fill_n(this->frame_.begin(), size, 0);
-  return !this->tx_failed_;
+  const auto status = rmt_transmit(this->tx_, this->encoder_, this->frame_.data(), size, &config);
+  if (status == ESP_OK) {
+    // A maximum-length frame takes about 27 ms.
+    const auto wait_status = rmt_tx_wait_all_done(this->tx_, 40);
+    if (wait_status != ESP_OK) {
+      ESP_LOGW(TAG, "RMT transmit did not complete: %s", esp_err_to_name(wait_status));
+      return false;
+    }
+  } else {
+    ESP_LOGW(TAG, "RMT transmit failed: %s", esp_err_to_name(status));
+  }
+  this->frame_.fill(0);
+  return status == ESP_OK;
 }
 
 bool RMTTransport::send(const uint8_t *bytes, size_t size) { return this->transmit_(bytes, size); }

@@ -34,7 +34,7 @@ class Transport {
   virtual bool command(const uint8_t *packet, size_t size) = 0;
   virtual bool request_response() = 0;
   virtual Receive receive(uint8_t *packet) = 0;
-  virtual bool power_down(bool idle) = 0;
+  virtual bool power_down(bool idle, bool allow_nack = false) = 0;
 };
 
 #ifdef USE_MICROCHIP_ATSHA204A_I2C
@@ -46,7 +46,7 @@ class I2CTransport : public Transport, public i2c::I2CDevice {
   bool command(const uint8_t *packet, size_t size) override;
   bool request_response() override { return true; }
   Receive receive(uint8_t *packet) override;
-  bool power_down(bool idle) override;
+  bool power_down(bool idle, bool allow_nack) override;
 };
 #endif
 
@@ -57,7 +57,7 @@ class SWITransport : public Transport, public uart::UARTDevice {
   bool command(const uint8_t *packet, size_t size) override;
   bool request_response() override;
   Receive receive(uint8_t *packet) override;
-  bool power_down(bool idle) override;
+  bool power_down(bool idle, bool allow_nack) override;
 
  protected:
   virtual bool send(const uint8_t *bytes, size_t size) = 0;
@@ -101,7 +101,6 @@ class RMTTransport : public SWITransport {
   rmt_channel_handle_t tx_{};
   rmt_encoder_handle_t encoder_{};
   std::array<uint8_t, 1 + MAX_COMMAND> frame_{};
-  bool tx_failed_{};
 };
 #endif
 
