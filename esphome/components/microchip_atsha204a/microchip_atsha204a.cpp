@@ -197,6 +197,12 @@ void ATSHA204A::loop() {
   if (micros() - this->wait_start_ < this->wait_us_)
     return;
   if (!this->response_requested_) {
+    // On a shared single-wire bus, wake replies may collide before Pause selects a chip.
+    if (this->state_ == State::STATE_WAKE && this->user_active_ && this->user_opcode_ == Opcode::OPCODE_PAUSE &&
+        this->transport_->is_single_wire()) {
+      this->send_user_();
+      return;
+    }
     if (this->state_ == State::STATE_USER && !this->expect_response_) {
       // Pause only idles chips whose selector does not match. Sleep any chip still awake.
       const bool sent = this->transport_->power_down(false, true);

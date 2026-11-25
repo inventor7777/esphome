@@ -12,6 +12,7 @@ class TestTransport : public Transport {
  public:
   bool setup() override { return true; }
   void dump_config() override {}
+  bool is_single_wire() const override { return this->single_wire; }
   bool wake() override {
     this->wakes++;
     return this->wake_ok;
@@ -37,6 +38,7 @@ class TestTransport : public Transport {
     return this->power_down_ok;
   }
 
+  bool single_wire{false};
   bool wake_ok{true};
   bool command_ok{true};
   bool power_down_ok{true};
@@ -114,6 +116,7 @@ TEST(ATSHA204A, RejectsBadResponseCrcWithoutRetryingCommand) {
 
 TEST(ATSHA204A, PauseWithoutResponseRequiresSleep) {
   TestTransport transport;
+  transport.single_wire = true;
   TestChip chip(transport);
   int last_status = BUSY;
   const auto finished = [&](int status, const CommandResponse &data, uint32_t session) {
@@ -128,12 +131,12 @@ TEST(ATSHA204A, PauseWithoutResponseRequiresSleep) {
   for (bool power_down_ok : {true, false}) {
     transport.power_down_ok = power_down_ok;
     chip.command(Opcode::OPCODE_PAUSE, 0, 0, {}, EndMode::END_MODE_SLEEP, 0, false, finished);
-    chip.advance({0x04, 0x11, 0x33, 0x43});
+    chip.advance();
     chip.advance();
     EXPECT_EQ(last_status, power_down_ok ? UNCONFIRMED : IO_ERROR);
     EXPECT_TRUE(transport.sleep_allows_nack);
   }
-  EXPECT_EQ(transport.requests, 2);
+  EXPECT_EQ(transport.requests, 0);
   EXPECT_EQ(transport.commands.size(), 2U);
   EXPECT_EQ(transport.low_power_modes, (std::vector<bool>{false, false}));
 }
