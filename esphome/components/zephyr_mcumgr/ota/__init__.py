@@ -3,9 +3,9 @@ import logging
 from esphome import pins
 import esphome.codegen as cg
 from esphome.components import network
+from esphome.components.const import CONF_TRANSPORT
 from esphome.components.nrf52.boards import MCUMGR_OTA_BOOTLOADERS
 from esphome.components.nrf52.const import (
-    CONF_TRANSPORT,
     CONF_UDP,
     FLASH_SECTOR_SIZE,
     IPV4_UDP_HEADERS,

@@ -3,7 +3,7 @@ from collections.abc import Iterator
 from esphome import automation, preferences
 import esphome.codegen as cg
 from esphome.components import logger, network, socket
-from esphome.components.const import CONF_VERIFY_SSL
+from esphome.components.const import CONF_TRANSPORT, CONF_VERIFY_SSL
 from esphome.components.esp32 import (
     add_idf_component,
     allow_insecure_tls,
@@ -108,7 +108,6 @@ CONF_TLS = "tls"
 CONF_IDF_SEND_ASYNC = "idf_send_async"
 CONF_WAIT_FOR_CONNECTION = "wait_for_connection"
 CONF_PERSIST_SUBSCRIPTIONS = "persist_subscriptions"
-CONF_TRANSPORT = "transport"
 CONF_WS_PATH = "ws_path"
 CONF_MAX_PAYLOAD_SIZE = "max_payload_size"
 
