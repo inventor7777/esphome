@@ -1,0 +1,4 @@
+microchip_atsha204a:
+  - id: atsha204a_rmt
+    transport: swi_rmt
+    pin: GPIO23
