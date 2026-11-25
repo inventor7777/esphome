@@ -13,8 +13,25 @@
 #ifdef USE_BINARY_SENSOR
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #endif
+#ifdef USE_TEXT_SENSOR
+#include "esphome/components/text_sensor/text_sensor.h"
+#include "esphome/core/string_ref.h"
+#endif
 
 namespace esphome::microchip_atsha204a {
+
+#ifdef USE_TEXT_SENSOR
+void publish_text_sensor(text_sensor::TextSensor *sensor, StringRef value);
+
+template<typename T>
+  requires requires(const T &value) {
+    value.data();
+    value.size();
+  }
+void publish_text_sensor(text_sensor::TextSensor *sensor, const T &value) {
+  publish_text_sensor(sensor, StringRef(value.data(), value.size()));
+}
+#endif
 
 enum class Opcode : uint8_t {
   OPCODE_PAUSE = 0x01,
@@ -56,6 +73,10 @@ class ATSHA204A : public PollingComponent {
   explicit ATSHA204A(Transport *transport) : transport_(transport) {}
 #ifdef USE_BINARY_SENSOR
   SUB_BINARY_SENSOR(presence)
+#endif
+#ifdef USE_TEXT_SENSOR
+  SUB_TEXT_SENSOR(serial_number)
+  SUB_TEXT_SENSOR(chip_revision)
 #endif
   template<typename F> void set_poll_callback(F &&callback) { this->poll_callback_ = std::forward<F>(callback); }
   template<typename F> void set_disconnect_callback(F &&callback) {
@@ -109,6 +130,7 @@ class ATSHA204A : public PollingComponent {
   bool has_serial_{};
   bool expect_response_{};
   std::array<uint8_t, 9> serial_{};
+  std::array<uint8_t, 4> revision_{};
   std::function<void()> poll_callback_;
   std::function<void()> disconnect_callback_;
   BlockCallback block_callback_;
