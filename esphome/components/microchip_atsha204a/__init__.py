@@ -5,17 +5,19 @@ from esphome.components.const import CONF_TRANSPORT
 import esphome.config_validation as cv
 from esphome.const import (
     CONF_DATA,
+    CONF_FLOW_CONTROL_PIN,
     CONF_ID,
     CONF_INVERTED,
     CONF_MODE,
     CONF_NUMBER,
     CONF_OPEN_DRAIN,
-    CONF_PIN,
     CONF_RMT_SYMBOLS,
     CONF_RX_BUFFER_SIZE,
+    CONF_RX_PIN,
+    CONF_TX_PIN,
     CONF_UART_ID,
 )
-from esphome.core import ID
+from esphome.core import CORE, ID
 from esphome.cpp_generator import MockObj, TemplateArgsType
 from esphome.types import ConfigType
 
@@ -45,21 +47,11 @@ microchip_atsha204a_ns = cg.esphome_ns.namespace(DOMAIN)
 ATSHA204A = microchip_atsha204a_ns.class_("ATSHA204A", cg.PollingComponent)
 I2CTransport = microchip_atsha204a_ns.class_("I2CTransport", i2c.I2CDevice)
 UARTTransport = microchip_atsha204a_ns.class_("UARTTransport", uart.UARTDevice)
-RMTTransport = microchip_atsha204a_ns.class_("RMTTransport")
+RMTTransport = microchip_atsha204a_ns.class_("RMTTransport", uart.UARTDevice)
 CommandAction = microchip_atsha204a_ns.class_("CommandAction", automation.Action)
 CommandResponse = microchip_atsha204a_ns.class_("CommandResponse")
 Opcode = microchip_atsha204a_ns.enum("Opcode", is_class=True)
 EndMode = microchip_atsha204a_ns.enum("EndMode", is_class=True)
-
-
-def _validate_rmt_pin(config: ConfigType) -> ConfigType:
-    if config[CONF_PIN][CONF_INVERTED]:
-        raise cv.Invalid("The single-wire GPIO cannot be inverted", [CONF_PIN])
-    if config[CONF_PIN][CONF_NUMBER] == 16:
-        raise cv.Invalid(
-            "Choose a GPIO other than UART2's dedicated RX pin (GPIO16)", [CONF_PIN]
-        )
-    return config
 
 
 def _validate_wake_pin(config: ConfigType) -> ConfigType:
@@ -85,17 +77,15 @@ CONFIG_SCHEMA = cv.typed_schema(
             }
         ),
         SWI_RMT: cv.All(
-            BASE_SCHEMA.extend(
+            BASE_SCHEMA.extend(uart.UART_DEVICE_SCHEMA).extend(
                 {
                     cv.GenerateID(CONF_TRANSPORT_ID): cv.declare_id(RMTTransport),
-                    cv.Required(CONF_PIN): pins.internal_gpio_output_pin_schema,
                     cv.Optional(CONF_RMT_SYMBOLS, default=64): cv.one_of(64, int=True),
                 }
             ),
             cv.only_on_esp32,
             esp32.only_on_variant(supported=[esp32.VARIANT_ESP32]),
             esp32.require_idf_version(cv.Version(5, 5, 4), SWI_RMT),
-            _validate_rmt_pin,
             esp32_rmt.request_rmt_channel("TX", 600.0),
         ),
     },
@@ -104,7 +94,15 @@ CONFIG_SCHEMA = cv.typed_schema(
 )
 
 _VALIDATE_I2C = i2c.final_validate_device_schema(DOMAIN, max_frequency="100kHz")
-_VALIDATE_UART = uart.final_validate_device_schema(
+_VALIDATE_RMT_UART = uart.final_validate_device_schema(
+    DOMAIN,
+    baud_rate=SWI_BAUD_RATE,
+    data_bits=7,
+    parity="NONE",
+    stop_bits=1,
+    require_rx=True,
+)
+_VALIDATE_SWI_UART = uart.final_validate_device_schema(
     DOMAIN,
     baud_rate=SWI_BAUD_RATE,
     data_bits=7,
@@ -121,23 +119,38 @@ _VALIDATE_UART_BUFFER = fv.id_declaration_match_schema(
 )
 
 
+def _validate_rmt_wiring(config: ConfigType) -> ConfigType:
+    if str(config[CONF_ID].type) != str(uart.IDFUARTComponent):
+        raise cv.Invalid("The RMT transport requires a hardware UART")
+    for key in (CONF_TX_PIN, CONF_FLOW_CONTROL_PIN):
+        if key in config:
+            raise cv.Invalid("The RMT transport requires an RX-only UART", [key])
+    pin = config[CONF_RX_PIN]
+    if pin[CONF_INVERTED] or pin[CONF_NUMBER] >= 34:
+        raise cv.Invalid("Use a non-inverted, output-capable GPIO", [CONF_RX_PIN])
+    # Dedicated UART RX pins bypass the GPIO matrix when allocated to their UART.
+    if pin[CONF_NUMBER] in (3, 9, 16):
+        raise cv.Invalid(
+            "Use an RX pin other than GPIO3, GPIO9 or GPIO16", [CONF_RX_PIN]
+        )
+    return config
+
+
 def _final_validate(config: ConfigType) -> None:
     transport = config[CONF_TRANSPORT]
     if transport == I2C:
         _VALIDATE_I2C(config)
-    elif transport == SWI_UART:
-        _VALIDATE_UART(config)
-        _VALIDATE_UART_BUFFER(config[CONF_UART_ID])
-        uart.claim_exclusive(config, DOMAIN)
-    else:
-        if (
-            sum(hub[CONF_TRANSPORT] == SWI_RMT for hub in fv.full_config.get()[DOMAIN])
-            > 1
-        ):
-            raise cv.Invalid(
-                "Only one RMT single-wire transport can use UART2", [CONF_TRANSPORT]
-            )
+        return
+
+    uart_id = config[CONF_UART_ID]
+    if transport == SWI_RMT:
+        _VALIDATE_RMT_UART(config)
+        fv.id_declaration_match_schema(_validate_rmt_wiring)(uart_id)
         esp32_rmt.final_validate_rmt_channels(config)
+    else:
+        _VALIDATE_SWI_UART(config)
+    _VALIDATE_UART_BUFFER(uart_id)
+    uart.claim_exclusive(config, DOMAIN)
 
 
 FINAL_VALIDATE_SCHEMA = _final_validate
@@ -149,9 +162,10 @@ async def to_code(config: ConfigType) -> None:
         cg.add_define("USE_MICROCHIP_ATSHA204A_SWI_RMT")
         esp32_rmt.register_rmt_channel(config)
         esp32.include_builtin_idf_component("esp_driver_rmt")
-        esp32.include_builtin_idf_component("esp_driver_uart")
-        pin = await cg.gpio_pin_expression(config[CONF_PIN])
+        uart_config = fv.get_declaring_config(config[CONF_UART_ID], CORE.config)
+        pin = uart_config[CONF_RX_PIN][CONF_NUMBER]
         transport = cg.new_Pvariable(config[CONF_TRANSPORT_ID], pin)
+        await uart.register_uart_device(transport, config)
     elif transport_type == SWI_UART:
         cg.add_define("USE_MICROCHIP_ATSHA204A_SWI_UART")
         wake_pin = await cg.gpio_pin_expression(config[CONF_WAKE_PIN])

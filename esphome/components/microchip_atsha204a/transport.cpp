@@ -8,7 +8,6 @@
 
 #ifdef USE_MICROCHIP_ATSHA204A_SWI_RMT
 #include "driver/gpio.h"
-#include "driver/uart.h"
 #endif
 
 namespace esphome::microchip_atsha204a {
@@ -109,15 +108,14 @@ bool SWITransport::command(const uint8_t *packet, size_t size) {
 
 bool SWITransport::request_response() {
   this->wait_to_send_();
-  this->flush_input();
+  this->discard_available();
   this->tokens_received_ = 0;
   return this->send(&SWI_TRANSMIT, 1);
 }
 
 Receive SWITransport::receive(uint8_t *packet) {
-  const int count =
-      this->read_tokens(this->tokens_.data() + this->tokens_received_, this->tokens_.size() - this->tokens_received_);
-  if (count < 0)
+  const size_t count = std::min(this->available(), this->tokens_.size() - this->tokens_received_);
+  if (count != 0 && !this->read_array(this->tokens_.data() + this->tokens_received_, count))
     return Receive::RECEIVE_IO_ERROR;
   this->tokens_received_ += count;
   if (this->tokens_received_ < 16)
@@ -177,16 +175,9 @@ void UARTTransport::dump_config() {
   LOG_PIN("  Wake pin: ", this->wake_pin_);
 }
 
-void UARTTransport::flush_input() { this->discard_available(); }
-
-int UARTTransport::read_tokens(uint8_t *tokens, size_t limit) {
-  const size_t count = std::min(limit, this->available());
-  return count == 0 || this->read_array(tokens, count) ? static_cast<int>(count) : -1;
-}
 #endif
 
 #ifdef USE_MICROCHIP_ATSHA204A_SWI_RMT
-static constexpr uart_port_t SWI_UART = UART_NUM_2;
 static constexpr uint32_t RMT_RESOLUTION_HZ = 2000000;
 static constexpr size_t RMT_SYMBOLS = 64;
 static constexpr uint8_t RMT_WAKE = 0;
@@ -218,19 +209,7 @@ static size_t RMT_ENCODER_FUNC_ATTR encode_swi(const void *data, size_t size, si
 }
 
 bool RMTTransport::setup() {
-  if (uart_is_driver_installed(SWI_UART)) {
-    ESP_LOGE(TAG, "The RMT single-wire transport requires exclusive use of UART2");
-    return false;
-  }
-
-  const auto gpio = static_cast<gpio_num_t>(this->pin_->get_pin());
-  uart_config_t uart_config{};
-  uart_config.baud_rate = 230400;
-  uart_config.data_bits = UART_DATA_7_BITS;
-  uart_config.parity = UART_PARITY_DISABLE;
-  uart_config.stop_bits = UART_STOP_BITS_1;
-  uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
-  uart_config.source_clk = UART_SCLK_DEFAULT;
+  const auto gpio = static_cast<gpio_num_t>(this->pin_);
   rmt_tx_channel_config_t tx{};
   tx.gpio_num = gpio;
   tx.clk_src = RMT_CLK_SRC_DEFAULT;
@@ -242,28 +221,19 @@ bool RMTTransport::setup() {
   encoder.callback = encode_swi;
   encoder.min_chunk_size = RMT_SYMBOLS_PER_BYTE;
 
-  if (uart_driver_install(SWI_UART, 1024, 0, 0, nullptr, 0) != ESP_OK)
-    return false;
-  // Attach RX before RMT enables open-drain output and leaves input enabled on the same GPIO.
-  if (uart_param_config(SWI_UART, &uart_config) != ESP_OK ||
-      uart_set_pin(SWI_UART, UART_PIN_NO_CHANGE, gpio, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE) != ESP_OK ||
-      uart_set_rx_timeout(SWI_UART, 2) != ESP_OK || gpio_od_enable(gpio) != ESP_OK ||
-      rmt_new_tx_channel(&tx, &this->tx_) != ESP_OK || rmt_new_simple_encoder(&encoder, &this->encoder_) != ESP_OK ||
-      rmt_enable(this->tx_) != ESP_OK) {
+  // The UART bus has already enabled input. Add open-drain output on the same GPIO.
+  if (gpio_od_enable(gpio) != ESP_OK || rmt_new_tx_channel(&tx, &this->tx_) != ESP_OK ||
+      rmt_new_simple_encoder(&encoder, &this->encoder_) != ESP_OK || rmt_enable(this->tx_) != ESP_OK) {
     if (this->encoder_ != nullptr)
       rmt_del_encoder(this->encoder_);
     if (this->tx_ != nullptr)
       rmt_del_channel(this->tx_);
-    uart_driver_delete(SWI_UART);
     return false;
   }
   return true;
 }
 
-void RMTTransport::dump_config() {
-  ESP_LOGCONFIG(TAG, "  Transport: Single-wire RMT (UART2 RX)");
-  LOG_PIN("  Pin: ", this->pin_);
-}
+void RMTTransport::dump_config() { ESP_LOGCONFIG(TAG, "  Transport: Single-wire RMT (UART RX on GPIO%u)", this->pin_); }
 
 bool RMTTransport::wake() { return this->transmit_(&RMT_WAKE, 1); }
 
@@ -285,9 +255,6 @@ bool RMTTransport::transmit_(const uint8_t *bytes, size_t size) {
 
 bool RMTTransport::send(const uint8_t *bytes, size_t size) { return this->transmit_(bytes, size); }
 
-void RMTTransport::flush_input() { uart_flush_input(SWI_UART); }
-
-int RMTTransport::read_tokens(uint8_t *tokens, size_t limit) { return uart_read_bytes(SWI_UART, tokens, limit, 0); }
 #endif
 
 }  // namespace esphome::microchip_atsha204a

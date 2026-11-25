@@ -10,7 +10,7 @@
 #ifdef USE_MICROCHIP_ATSHA204A_I2C
 #include "esphome/components/i2c/i2c.h"
 #endif
-#ifdef USE_MICROCHIP_ATSHA204A_SWI_UART
+#if defined(USE_MICROCHIP_ATSHA204A_SWI_UART) || defined(USE_MICROCHIP_ATSHA204A_SWI_RMT)
 #include "esphome/components/uart/uart.h"
 #endif
 #ifdef USE_MICROCHIP_ATSHA204A_SWI_RMT
@@ -51,7 +51,7 @@ class I2CTransport : public Transport, public i2c::I2CDevice {
 #endif
 
 #if defined(USE_MICROCHIP_ATSHA204A_SWI_UART) || defined(USE_MICROCHIP_ATSHA204A_SWI_RMT)
-class SWITransport : public Transport {
+class SWITransport : public Transport, public uart::UARTDevice {
  public:
   bool is_single_wire() const override { return true; }
   bool command(const uint8_t *packet, size_t size) override;
@@ -61,8 +61,6 @@ class SWITransport : public Transport {
 
  protected:
   virtual bool send(const uint8_t *bytes, size_t size) = 0;
-  virtual void flush_input() = 0;
-  virtual int read_tokens(uint8_t *tokens, size_t limit) = 0;
   void wait_to_send_();
 
   std::array<uint8_t, (1 + MAX_RESPONSE) * 8> tokens_{};
@@ -73,7 +71,7 @@ class SWITransport : public Transport {
 #endif
 
 #ifdef USE_MICROCHIP_ATSHA204A_SWI_UART
-class UARTTransport : public SWITransport, public uart::UARTDevice {
+class UARTTransport : public SWITransport {
  public:
   explicit UARTTransport(InternalGPIOPin *wake_pin) : wake_pin_(wake_pin) {}
   bool setup() override;
@@ -82,8 +80,6 @@ class UARTTransport : public SWITransport, public uart::UARTDevice {
 
  protected:
   bool send(const uint8_t *bytes, size_t size) override;
-  void flush_input() override;
-  int read_tokens(uint8_t *tokens, size_t limit) override;
 
   InternalGPIOPin *const wake_pin_;
 };
@@ -92,18 +88,16 @@ class UARTTransport : public SWITransport, public uart::UARTDevice {
 #ifdef USE_MICROCHIP_ATSHA204A_SWI_RMT
 class RMTTransport : public SWITransport {
  public:
-  explicit RMTTransport(InternalGPIOPin *pin) : pin_(pin) {}
+  explicit RMTTransport(uint8_t pin) : pin_(pin) {}
   bool setup() override;
   void dump_config() override;
   bool wake() override;
 
  protected:
   bool send(const uint8_t *bytes, size_t size) override;
-  void flush_input() override;
-  int read_tokens(uint8_t *tokens, size_t limit) override;
   bool transmit_(const uint8_t *bytes, size_t size);
 
-  InternalGPIOPin *const pin_;
+  const uint8_t pin_;
   rmt_channel_handle_t tx_{};
   rmt_encoder_handle_t encoder_{};
   std::array<uint8_t, 1 + MAX_COMMAND> frame_{};
