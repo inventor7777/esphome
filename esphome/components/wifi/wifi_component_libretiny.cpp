@@ -261,6 +261,13 @@ bool WiFiComponent::wifi_sta_connect_(const WiFiAP &ap) {
   this->sta_state_ = static_cast<uint8_t>(LTWiFiSTAState::CONNECTING);
   s_ignored_disconnect_count = 0;
 
+#ifdef LT_HAS_WIFI_ASYNC_JOIN
+  // Let the worker scan for the BSSID without changing the SDK scan list from the main loop.
+  const bool started = WiFi.beginAsync(ap.ssid_.c_str(), ap.password_.empty() ? nullptr : ap.password_.c_str(), 0,
+                                       ap.has_bssid() ? ap.get_bssid().data() : nullptr);
+  if (!started)
+    ESP_LOGW(TAG, "WiFi.beginAsync failed to start");
+#else
   uint8_t channel = ap.get_channel();  // 0 = auto
 #ifdef USE_RTL87XX
   // Given a channel and a BSSID, LibreTiny narrows the driver's scan list to the channel for the join, then leaves it
@@ -281,13 +288,17 @@ bool WiFiComponent::wifi_sta_connect_(const WiFiAP &ap) {
     status = WiFi.begin(ap.ssid_.c_str(), ap.password_.empty() ? NULL : ap.password_.c_str(), channel,
                         ap.has_bssid() ? ap.get_bssid().data() : NULL);
   }
-  if (status != WL_CONNECTED) {
+  const bool started = status == WL_CONNECTED;
+  if (!started) {
 #ifdef USE_RTL87XX
     ESP_LOGW(TAG, "WiFi.begin failed: %d (%s)", status,
              LOG_STR_ARG(JoinErrorStrings::get_log_str(wifi_get_last_error(), JoinErrorStrings::LAST_INDEX)));
 #else
     ESP_LOGW(TAG, "WiFi.begin failed: %d", status);
 #endif
+  }
+#endif
+  if (!started) {
     // Without this reset the state machine stays at CONNECTING and each retry
     // stalls for the full connect timeout (46 s).
     this->sta_state_ = static_cast<uint8_t>(LTWiFiSTAState::ERROR_FAILED);
